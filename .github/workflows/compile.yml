@@ -10,64 +10,62 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 检出代码到根目录
+    # 1. 检出代码
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 2. 设置 Go 编译环境
+    # 2. 设置 Go 环境（彻底关闭缓存功能，防止找不到 go.sum 报错）
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.22'
+        cache: false # 💡 关键改动：关闭自动缓存，拒绝由于找不到 go.sum 导致的报错中断
 
-    # 3. 执行编译并强制输出到根目录
+    # 3. 强制在子目录中独立编译并输出到根目录
     - name: Compile IonStack with Go
       run: |
-        # 获取当前项目的绝对根目录路径
         ROOT_DIR=$(pwd)
         echo "项目绝对根目录是: $ROOT_DIR"
         
+        # 强制进入包含漏洞利用代码的 IonStack 目录
         cd IonStack
         
         for dir in */; do
           dirname=${dir%/}
           
           echo "========================================="
-          echo "正在编译模块: $dirname"
+          echo "正在处理模块: $dirname"
           echo "========================================="
           
           cd "$dirname"
           
-          # 检查 Go 源码
+          # 检查当前子目录下是否有 Go 相关的源码
           if [ -f "go.mod" ] || ls *.go 1> /dev/null 2>&1; then
-            echo "开始跨平台编译为 Android (arm64)..."
+            echo "在 $dirname 中发现 Go 代码，开始编译..."
             
-            # 【核心修改】：输出路径直接锁定到 $ROOT_DIR/android_${dirname}
+            # 如果有 go.mod，先尝试拉取可能存在的远程依赖，防止编译时缺库
+            if [ -f "go.mod" ]; then
+              go mod download || true
+            fi
+            
+            # 交叉编译成安卓 arm64 二进制文件
             CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o "$ROOT_DIR/android_${dirname}"
             
-            echo "✅ 成功生成并移至根目录 -> android_${dirname}"
+            echo "✅ 编译成功，已放入根目录: android_${dirname}"
           else
-            # 兼容少许 C 语言的情况（双保险）
-            if ls *.c 1> /dev/null 2>&1; then
-               export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-               CGO_ENABLED=1 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o "$ROOT_DIR/android_${dirname}"
-               echo "✅ CGO 编译成功并移至根目录 -> android_${dirname}"
-            else
-               echo "❌ 该目录不含有效的源码，跳过。"
-            fi
+            echo "⚠️ 未发现标准 Go 源码文件，跳过。"
           fi
           
           cd ..
         done
         
-        # 在根目录生成一个编译状态报告，确保即使没有编译出任何东西，根目录下也有新文件可供打包
-        echo "Build finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
+        # 强制在根目录下生成状态文件，作为打包的绝对兜底
+        echo "Build pipeline finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
 
-    # 4. 直接在根目录打包上传
+    # 4. 在根目录打包上传
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Android-IonStack-Exploits
-        # 【核心修改】：通过通配符前缀，只上传根目录下我们刚刚生成的安卓二进制文件
         path: |
           android_*
