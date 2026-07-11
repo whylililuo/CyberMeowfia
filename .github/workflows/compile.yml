@@ -3,50 +3,60 @@ name: Build IonStack Android Binary
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # 支持手动点击按钮触发
+  workflow_dispatch:
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 拉取仓库代码
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 2. 编译 IonStack
-    - name: Compile IonStack Binary
+    - name: Compile IonStack Binaries
       run: |
         cd IonStack
         
-        # 直接使用 GitHub Ubuntu 环境中自带的 Android NDK 路径
-        # ANDROID_NDK_LATEST_HOME 是 GitHub 官方预设的环境变量
-        echo "使用系统内置 NDK 路径: $ANDROID_NDK_LATEST_HOME"
-        
-        # 设置交叉编译器路径（针对 arm64-v8a 架构，API 29 对应安卓 10+）
+        # 1. 定义交叉编译器路径（API 29 对应 Android 10+）
         export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
         
-        echo "检查 IonStack 目录结构..."
-        ls -la
+        # 创建一个统一存放编译输出文件的目录
+        mkdir -p output_bins
         
-        # 编译策略
-        if [ -f "Makefile" ] || [ -f "makefile" ]; then
-          echo "检测到 Makefile，使用 make 编译..."
-          make CC=$CC
-        elif [ -f "Android.mk" ]; then
-          echo "检测到 Android.mk，使用 ndk-build 编译..."
-          $ANDROID_NDK_LATEST_HOME/ndk-build
-        else
-          echo "未检测到构建脚本，直接调用 Clang 编译所有 .c 文件..."
-          $CC *.c -o ionstack_bin -pie -fPIE
-        fi
+        # 2. 循环遍历当前目录下的所有子目录（如 CVE-2026-10702 等）
+        for dir in */; do
+          # 去掉目录名末尾的斜杠 /
+          dirname=${dir%/}
+          
+          # 排除我们刚刚创建的输出目录
+          if [ "$dirname" = "output_bins" ]; then
+            continue
+          fi
+          
+          echo "========================================="
+          echo "正在处理目录: $dirname"
+          echo "========================================="
+          
+          cd "$dirname"
+          
+          # 检查子目录下是否有 .c 文件
+          if ls *.c 1> /dev/null 2>&1; then
+            echo "发现源码，开始编译..."
+            # 编译该目录下所有 .c 文件，输出为以目录名为名字的二进制文件
+            $CC *.c -o "../output_bins/${dirname}_bin" -pie -fPIE
+            echo "编译成功 -> output_bins/${dirname}_bin"
+          else
+            echo "未在 $dirname 中找到 .c 源码文件，跳过。"
+          fi
+          
+          # 返回上级 IonStack 目录
+          cd ..
+        done
 
-    # 3. 上传编译成果物
+    # 3. 上传编译好的所有二进制文件
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: IonStack-Android-Binaries
-        path: |
-          IonStack/ionstack_bin
-          IonStack/libs/
-          IonStack/obj/
+        # 只需要上传我们统一收集的 output_bins 目录即可
+        path: IonStack/output_bins/
