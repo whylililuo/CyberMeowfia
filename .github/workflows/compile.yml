@@ -10,44 +10,52 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # 1. 检出代码
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
-        cache: false
-
-    - name: Diagnose and Compile IonStack
+    # 2. 调用 NDK 编译器和 Make 进行精准编译
+    - name: Compile C Exploits
       run: |
         ROOT_DIR=$(pwd)
+        echo "项目根目录: $ROOT_DIR"
         
-        echo "========================================="
-        echo "【诊断】深度扫描 IonStack 目录结构："
-        echo "========================================="
-        cd IonStack
-        ls -R
-        echo "========================================="
+        # 设定 NDK 工具链路径（针对 arm64-v8a 架构，安卓 10+）
+        export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
         
-        # 开始循环处理子目录
-        for dir in */; do
-          dirname=${dir%/}
-          echo "👉 正在处理子目录: $dirname"
-          
-          cd "$dirname"
-          
-          echo "--- 正在尝试强行编译 $dirname ---"
-          # 放弃严格的 if 判断，直接强行注入环境变量进行 Go 编译
-          # 即使编译失败，Go 会把缺什么文件、什么语法的报错直接吐在日志里
-          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o "$ROOT_DIR/android_${dirname}" 2>&1 || echo "❌ 强行构建失败"
-          
-          cd ..
-        done
-        
-        # 写入兜底状态文件
-        echo "Debug build pipeline finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
+        # -------------------------------------------------------------
+        # 编译任务一：编译 CVE-2026-43499 的独立 poc.c
+        # -------------------------------------------------------------
+        if [ -d "IonStack/CVE-2026-43499/poc" ]; then
+          echo "👉 开始编译 CVE-2026-43499 Poc..."
+          cd IonStack/CVE-2026-43499/poc
+          $CC poc.c -o "$ROOT_DIR/android_CVE-2026-43499_poc" -pie -fPIE -lm
+          echo "✅ Poc 编译成功并移至根目录。"
+          cd $ROOT_DIR
+        fi
 
+        # -------------------------------------------------------------
+        # 编译任务二：利用 Makefile 编译 CVE-2026-43499 的完整 exploit
+        # -------------------------------------------------------------
+        if [ -d "IonStack/CVE-2026-43499/exploit" ]; then
+          echo "👉 开始编译 CVE-2026-43499 完整 Exploit..."
+          cd IonStack/CVE-2026-43499/exploit
+          
+          # 传入 NDK 的 Clang 编译器替换系统默认的 gcc 执行 make
+          make CC=$CC
+          
+          # 检查编译出来的可执行文件名（一般 Makefile 编译出的成品在当前目录或 bin/，我们把生成的成果找出来）
+          # 这里为了确保稳妥，把当前目录下生成的新可执行文件全部抓取过来
+          find . -maxdepth 2 -type f -executable -not -name "*.sh" -exec cp {} "$ROOT_DIR/android_CVE-2026-43499_exploit" \;
+          
+          echo "✅ Exploit 编译完成并尝试移至根目录。"
+          cd $ROOT_DIR
+        fi
+
+        # 强制写入兜底报告
+        echo "C pipeline finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
+
+    # 3. 在根目录打包上传
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
