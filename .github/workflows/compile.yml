@@ -3,7 +3,7 @@ name: Build IonStack Android Binary
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # 支持在 GitHub 页面上手动点击按钮触发编译
+  workflow_dispatch: # 支持手动点击按钮触发
 
 jobs:
   build-android:
@@ -14,43 +14,38 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 2. 设置 Android NDK（使用 GitHub 自带的，不需要自己下）
-    - name: Setup Android NDK
-      uses: ntouchka/setup-ndk@v3
-      with:
-        ndk-version: 'r25c' # 兼容性好且稳定的常用版本
-
-    # 3. 针对 IonStack 进行编译
+    # 2. 编译 IonStack
     - name: Compile IonStack Binary
       run: |
         cd IonStack
         
-        # 自动定位当前 NDK 路径下的 Clang 交叉编译器 (针对 arm64-v8a, API 29对应安卓10+)
-        export CC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
+        # 直接使用 GitHub Ubuntu 环境中自带的 Android NDK 路径
+        # ANDROID_NDK_LATEST_HOME 是 GitHub 官方预设的环境变量
+        echo "使用系统内置 NDK 路径: $ANDROID_NDK_LATEST_HOME"
+        
+        # 设置交叉编译器路径（针对 arm64-v8a 架构，API 29 对应安卓 10+）
+        export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
         
         echo "检查 IonStack 目录结构..."
         ls -la
         
-        # 兼容性编译策略：
-        # 如果项目包含 Makefile，则直接运行 make；如果没有，则将目录下的所有 .c 文件直接编译为二进制
+        # 编译策略
         if [ -f "Makefile" ] || [ -f "makefile" ]; then
           echo "检测到 Makefile，使用 make 编译..."
           make CC=$CC
         elif [ -f "Android.mk" ]; then
           echo "检测到 Android.mk，使用 ndk-build 编译..."
-          $ANDROID_NDK_ROOT/ndk-build
+          $ANDROID_NDK_LATEST_HOME/ndk-build
         else
-          echo "未检测到构建脚本，尝试直接调用 Clang 编译所有 .c 文件..."
-          # 假设主输出文件为 ionstack_bin，你可以根据实际需求更改名字
+          echo "未检测到构建脚本，直接调用 Clang 编译所有 .c 文件..."
           $CC *.c -o ionstack_bin -pie -fPIE
         fi
 
-    # 4. 上传编译成果物
+    # 3. 上传编译成果物
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: IonStack-Android-Binaries
-        # 匹配 IonStack 目录下编译出的所有生成物（如果是 ndk-build 会在 libs 目录下）
         path: |
           IonStack/ionstack_bin
           IonStack/libs/
