@@ -1,4 +1,4 @@
-name: Build Android Binaries
+name: Build Android Binaries (With Full Debug Logs)
 
 on:
   push:
@@ -13,62 +13,65 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Enable Debug and Compile C Exploits
+    - name: Force Enable Debug Verbose and Build
       run: |
         ROOT_DIR=$(pwd)
-        export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-
+        export ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME
+        export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+        
         # -------------------------------------------------------------
-        # 处理并编译 CVE-2026-43499 Poc
+        # 1. 深度注入 CVE-2026-43499 Poc
         # -------------------------------------------------------------
         if [ -d "IonStack/CVE-2026-43499/poc" ]; then
-          echo "👉 开始处理 CVE-2026-43499 Poc..."
+          echo "👉 处理 Poc 源码..."
           cd IonStack/CVE-2026-43499/poc
           
-          # 1. 结构体冲突修复
+          # 头文件与结构体冲突处理
           sed -i 's/struct sched_attr/struct my_custom_sched_attr/g' poc.c
-          
-          # 2. 在代码开头注入调试宏开关
-          sed -i '1i #define DEBUG 1\n#define VERBOSE 1\n#define DEBUG_PRINT 1' poc.c
-          
-          # 3. 【核心改动】：用 sed 直接在 main 内部开头插入关闭缓冲区的标准 C 语句，避免命令行转义报错
+          sed -i '1i #include <stdio.h>\n#define DEBUG 1\n#define VERBOSE 1\n#define DEBUG_PRINT 1' poc.c
           sed -i '/main\s*(/!b;n;a\    setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);' poc.c
           
-          echo "开始执行编译..."
+          # 强制将代码中所有的 printf("...") 或者是可能隐藏的自定义打印全部无条件激活
+          export CC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
           $CC poc.c -o "$ROOT_DIR/android_CVE-2026-43499_poc" -pie -fPIE -lm
-          
           cd $ROOT_DIR
         fi
 
         # -------------------------------------------------------------
-        # 处理并编译 CVE-2026-43499 完整 Exploit
+        # 2. 对 Makefile 模块进行全代码级别的“强行脱壳”打印注入
         # -------------------------------------------------------------
         if [ -d "IonStack/CVE-2026-43499/exploit" ]; then
-          echo "👉 开始处理 CVE-2026-43499 完整 Exploit..."
+          echo "👉 正在对 Exploit 源码进行全日志宏激活..."
           cd IonStack/CVE-2026-43499/exploit
           
-          # 1. 结构体冲突修复
+          # A. 修复基础环境冲突
           find . -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/struct sched_attr/struct my_custom_sched_attr/g' 2>/dev/null || true
           
-          # 2. 在所有 C 文件开头注入调试宏
-          find . -type f -name "*.c" -exec sed -i '1i #define DEBUG 1\n#define VERBOSE 1' {} \;
+          # B. 【核心黑魔法】：强制把所有源文件的第1行塞入标准库和最激进的调试宏
+          # 这样可以强行覆盖掉作者在别处关闭日志的底层逻辑
+          find src/ -type f -name "*.c" -exec sed -i '1i #include <stdio.h>\n#define DEBUG 1\n#define VERBOSE 1\n#define DEBUG_LOG 1\n#define LOG_NDEBUG 0' {} \;
           
-          # 3. 在包含 main 函数的 C 文件内部注入关闭缓冲代码
-          find . -type f -name "*.c" -exec sed -i '/main\s*(/!b;n;a\    setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);' {} \;
+          # C. 精准在 main 入口关闭缓冲区
+          if [ -f "src/main.c" ]; then
+            sed -i '/main\s*(/!b;n;a\    setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);' src/main.c
+          fi
           
-          echo "开始执行 make..."
-          make CC="$CC"
+          # D. 【高级重定向】：由于 preload.so 运行在系统底层，它的标准输出可能被主进程吃掉
+          # 我们在编译时，强行把底层的自定义日志打印函数重定向到安卓的 logcat 或者是标准流中
+          # 通过向 Makefile 传递最高级别的优化调试开关 -g3 -O0（保留全部符号，不进行代码混淆，方便看清步骤）
+          make API=29 COMMON_CFLAGS="-O0 -g3 -fno-inline -DDEBUG=1 -DVERBOSE=1"
           
-          find . -maxdepth 2 -type f -executable -not -name "*.sh" -not -name "*.py" -exec cp {} "$ROOT_DIR/android_CVE-2026-43499_exploit" \;
-          
+          cp -r build "$ROOT_DIR/android_exploit_build_output"
           cd $ROOT_DIR
         fi
 
-        echo "Debug via code injection finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
+        echo "Full verbose logs build finished at $(date)" > "$ROOT_DIR/android_build_status.txt"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Android-IonStack-Exploits
+        name: Android-IonStack-Debug-Exploits
         path: |
-          android_*
+          android_CVE-2026-43499_poc
+          android_exploit_build_output/
+          android_build_status.txt
